@@ -17,6 +17,9 @@ bend_t* bends;
 int* costs;
 int* trans_costs;
 const int INT_MAX = 0x7fffffff;
+double parallelTime;
+double waitTIme;
+double otherTime;
 
 
 // Initialize problem
@@ -120,6 +123,8 @@ static inline int getWire(int wireIndex, int* x1, int* y1, int* x2, int* y2, int
 
 
 void remove_wire(int x1, int x2, int y1, int y2, bend_t bend) {
+    double start = MPI_Wtime();
+
     int bendx = bend.x;
     int bendy = bend.y;
     int unit;
@@ -160,10 +165,12 @@ void remove_wire(int x1, int x2, int y1, int y2, bend_t bend) {
             trans_costs[x2 * dim_y + y] -= 1;
         }
     }
+    otherTime += MPI_Wtime() - start;
 }
 
 
 void add_wire(int x1, int x2, int y1, int y2, bend_t bend) {
+    double start = MPI_Wtime();
     int bendx = bend.x;
     int bendy = bend.y;
     int unit;
@@ -204,6 +211,7 @@ void add_wire(int x1, int x2, int y1, int y2, bend_t bend) {
             trans_costs[x2 * dim_y + y] += 1;
         }
     }
+    otherTime += MPI_Wtime() - start;
 }
 
 void calculate_cost(int x1, int x2, int y1, int y2, int bendx, int bendy, 
@@ -265,69 +273,13 @@ void calculate_cost(int x1, int x2, int y1, int y2, int bendx, int bendy,
   *max_cost = local_max_cost;
 }
 
-int check_match() {
-  int* tmpCost = (int*)malloc(sizeof(int) * dim_x * dim_y);
-  for (int x = 0; x < dim_x; x ++) {
-    for (int y = 0; y < dim_y; y ++) {
-      tmpCost[x + y * dim_x] = 0;
-    }
-  }
-  for (int wireInd = 0; wireInd < global_numWires; wireInd ++) {
-    int x1 = wires[wireInd].x1;
-    int y1 = wires[wireInd].y1;
-    int x2 = wires[wireInd].x2;
-    int y2 = wires[wireInd].y2;
-    int bendx = bends[wireInd].x;
-    int bendy = bends[wireInd].y;
-    int unit;
-    // horizontal first
-    if (bendy == y1) {
-        unit = x1 < bendx? 1 : -1;
-        
-        for (int x = x1; x != bendx; x+=unit) {
-            tmpCost[x + y1 * dim_x] += 1;
-        }
-        unit = y1 < y2? 1 : -1;
-        for (int y = y1; y != y2; y+=unit) {
-            tmpCost[bendx+y*dim_x] += 1;
-        }
-        unit = bendx < x2? 1 : -1;
-        for (int x = bendx; x != x2+unit; x+=unit) {
-            tmpCost[x+y2*dim_x] += 1;
-        }
-    }
-    // vertical first
-    else {
-        unit = y1 < bendy? 1 : -1;
-        for (int y = y1; y != bendy; y+=unit) {
-            tmpCost[x1+y*dim_x] += 1;
-        }
-        unit = x1 < x2? 1 : -1;
-        for (int x = x1; x != x2; x+=unit) {
-            tmpCost[x+bendy*dim_x] += 1;
-        }
-        unit = bendy < y2? 1 : -1;
-        for (int y = bendy; y != y2+unit; y+=unit) {
-            tmpCost[x2+y*dim_x] += 1;
-        }
-    }
-  }
-
-  for (int x = 0; x < dim_x; x ++) {
-    for (int y = 0; y < dim_y; y ++) {
-      if (tmpCost[x + y * dim_x] != costs[x + y * dim_x]) {
-        return 1;
-      }
-    }
-  }
-
-  return 0;
-}
-
 void iterations(float SA_prob, int SA_iters, int nproc, int procID) {
    
     int half_delta = global_delta/2;
     int randMax = 1000;
+
+    //Arrays for result combinations
+    int* received = (int*) malloc(4 * sizeof(int) * nproc);
 
     // go over all wires
     srand((unsigned)time(0));
@@ -347,7 +299,7 @@ void iterations(float SA_prob, int SA_iters, int nproc, int procID) {
                 randP = rand() % randMax;
             }
             MPI_Bcast(&randP, 1, MPI_INT, root, MPI_COMM_WORLD);
-
+            
             if (randP >= randMax * SA_prob) {
                 int low_hor;
                 int high_hor;
@@ -371,9 +323,8 @@ void iterations(float SA_prob, int SA_iters, int nproc, int procID) {
                     high_ver = y1 + half_delta + 1 < dim_y ? y1 + half_delta + 1 : dim_y - 1;
                 }
                 int numRoutes = high_hor - low_hor + high_ver - low_ver;
-                int span = (numRoutes + nproc - 1) / nproc;
-                int startIndex = procID * span;
-                int endIndex = numRoutes < startIndex + span? numRoutes : startIndex + span;
+
+                int startIndex = procID;
     
                 int min_max_cost = INT_MAX;
                 int min_cost_sum = INT_MAX;
@@ -381,7 +332,8 @@ void iterations(float SA_prob, int SA_iters, int nproc, int procID) {
                 int cost_sum = -1;
                 int best_r = -1;
                 int best_c = -1;
-                for (int route = startIndex; route < endIndex; route++) {
+                double parallelStart = MPI_Wtime();
+                for (int route = startIndex; route < numRoutes; route += nproc) {
                     int r;
                     int c;
                     if (route < high_hor - low_hor) {
@@ -409,52 +361,37 @@ void iterations(float SA_prob, int SA_iters, int nproc, int procID) {
                         best_r = r;
                         best_c = c;
                     }
-                    if (best_r == 0 && best_c == 0)
-                    printf("x1: %d, y1:%d, best_r: %d, best_c: %d\n", best_r, best_c , x1, y1);
                 }
-
-
+                double parallelEnd = MPI_Wtime();
+                parallelTime += parallelEnd - parallelStart;
                 // root combining results
-                int* min_max_costs = (int*) malloc(sizeof(int)*nproc);
-                int* min_cost_sums = (int*) malloc(sizeof(int)*nproc);
-                int* best_rs = (int*) malloc(sizeof(int)*nproc);
-                int* best_cs = (int*) malloc(sizeof(int)*nproc);
-                
-                min_max_costs[procID] = min_max_cost;
-                min_cost_sums[procID] = min_cost_sum;
-                best_rs[procID] = best_r;
-                best_cs[procID] = best_c;
-                
-                MPI_Status status;
-                if (procID != root) {
-                    MPI_Send(&min_max_costs[procID], 1, MPI_INT, root, 0, MPI_COMM_WORLD);
-                    MPI_Send(&min_cost_sums[procID], 1, MPI_INT, root, 1, MPI_COMM_WORLD);
-                    MPI_Send(&best_rs[procID], 1, MPI_INT, root, 2, MPI_COMM_WORLD);
-                    MPI_Send(&best_cs[procID], 1, MPI_INT, root, 3, MPI_COMM_WORLD);
-                } 
-                else {
-                    for (int source = 1; source < nproc; source++) {
-                        MPI_Recv(&min_max_costs[procID], 1, MPI_INT, source, 0, MPI_COMM_WORLD, &status);
-                        MPI_Recv(&min_cost_sums[procID], 1, MPI_INT, source, 1, MPI_COMM_WORLD, &status);
-                        MPI_Recv(&best_rs[procID], 1, MPI_INT, source, 2, MPI_COMM_WORLD, &status);
-                        MPI_Recv(&best_cs[procID], 1, MPI_INT, source, 3, MPI_COMM_WORLD, &status);
-                    }
+                int sent[4];
+                sent[0] = min_max_cost;
+                sent[1] = min_cost_sum;
+                sent[2] = best_r;
+                sent[3] = best_c;
 
+                double waitStart = MPI_Wtime();
+                MPI_Gather(sent, 4, MPI_INT, received, 4, MPI_INT, root, MPI_COMM_WORLD);
+                double waitEnd = MPI_Wtime();
+                waitTIme += waitEnd - waitStart;
+
+                if (procID == root) {
                     for (int j = 0; j < nproc; j++) {
-                        max_cost = min_max_costs[j];
-                        cost_sum = min_cost_sums[j];
+                        max_cost = received[4 * j];
+                        cost_sum = received[4 * j + 1];
                         if (max_cost < min_max_cost || (max_cost == min_max_cost && cost_sum < min_cost_sum)) {
                             min_max_cost = max_cost;
                             min_cost_sum = cost_sum;
-                            best_r = best_rs[j];
-                            best_c = best_cs[j];
+                            best_r = received[4 * j + 2];
+                            best_c = received[4 * j + 3];
                         }
                     }
                     bends[i].x = best_c;
                     bends[i].y = best_r;
+
                 }
-            } 
-            else {
+            } else {
                 if (procID == root) {
                     int lox;
                     int loy;
@@ -499,6 +436,7 @@ void iterations(float SA_prob, int SA_iters, int nproc, int procID) {
 
             MPI_Bcast(&bends[i], 2, MPI_INT, root, MPI_COMM_WORLD);
             add_wire(x1, x2, y1, y2, bends[i]);
+
         }
     }
 }
@@ -641,15 +579,35 @@ void writeOutput(char* inputFilename, int nproc)
     free(dname);
 }
 
+void print_result(){
+    int max_cost = 0;
+    int sum_cost = 0;
+    for (int row = 0; row < dim_y; row += 1) {
+        for (int col = 0; col < dim_x; col += 1) {
+            max_cost = costs[row * dim_x + col] > max_cost ? costs[row * dim_x + col] : max_cost;
+            sum_cost += costs[row * dim_x + col] * costs[row * dim_x + col];
+        }
+    }
+    printf("Max cost: %d\n", max_cost);
+    printf("Sum cost: %d\n", sum_cost);
+}
+
 // Perform computation, including reading/writing output files
 void compute(int procID, int nproc, char* inputFilename, double prob, int numIterations)
 {
     readInput(inputFilename);
-
+    parallelTime = 0;
+    waitTIme = 0;
+    otherTime = 0;
     iterations(prob, numIterations, nproc, procID);
     
     if (procID == root) {
         writecosts(inputFilename, nproc);
         writeOutput(inputFilename, nproc);
+        print_result();
     }
+
+    printf("procID: %d parallelTime: %f\n", procID, parallelTime);
+    printf("procID: %d waitTIme: %f\n", procID, waitTIme);
+    printf("procID: %d otherTime: %f\n", procID, otherTime);
 }
