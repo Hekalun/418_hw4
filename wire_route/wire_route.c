@@ -20,6 +20,7 @@ const int INT_MAX = 0x7fffffff;
 double parallelTime;
 double waitTIme;
 double otherTime;
+int gran = 30;
 
 
 // Initialize problem
@@ -118,8 +119,6 @@ static inline int getWire(int wireIndex, int* x1, int* y1, int* x2, int* y2, int
     //printf("x1: %d y1: %d x2: %d y2: %d x3: %d y3: %d x4: %d y4: %d \n", *x1, *y1, *x2, *y2, *x3, *y3, *x4, *y4 );
     return 4;
 }
-
-
 
 
 void remove_wire(int x1, int x2, int y1, int y2, bend_t bend) {
@@ -324,72 +323,115 @@ void iterations(float SA_prob, int SA_iters, int nproc, int procID) {
                 }
                 int numRoutes = high_hor - low_hor + high_ver - low_ver;
 
-                int startIndex = procID;
-    
-                int min_max_cost = INT_MAX;
-                int min_cost_sum = INT_MAX;
-                int max_cost = -1;
-                int cost_sum = -1;
-                int best_r = -1;
-                int best_c = -1;
-                double parallelStart = MPI_Wtime();
-                for (int route = startIndex; route < numRoutes; route += nproc) {
-                    int r;
-                    int c;
-                    if (route < high_hor - low_hor) {
-                        c = route + low_hor;
-                        r = y1;
-                        if (c == x1) {
-                            continue;
-                        }
-                        calculate_cost(x1, x2, y1, y2, c, y1,
-                                       &max_cost, &cost_sum);
-                    } 
-                    else {
-                        r = route - (high_hor - low_hor) + low_ver;
-                        c = x1;
-                        if (r == y1) {
-                            continue;
-                        }
-                        calculate_cost(x1, x2, y1, y2, x1, r,
-                                       &max_cost, &cost_sum);
-                    }
-                    //printf("r:%d c:%d max_cost: %d cost_sum: %d\n", r, c, max_cost, cost_sum );
-                    if (max_cost < min_max_cost || (max_cost == min_max_cost && cost_sum < min_cost_sum)) {
-                        min_max_cost = max_cost;
-                        min_cost_sum = cost_sum;
-                        best_r = r;
-                        best_c = c;
-                    }
-                }
-                double parallelEnd = MPI_Wtime();
-                parallelTime += parallelEnd - parallelStart;
-                // root combining results
-                int sent[4];
-                sent[0] = min_max_cost;
-                sent[1] = min_cost_sum;
-                sent[2] = best_r;
-                sent[3] = best_c;
+                if (numRoutes <= gran) {
+                    if (procID == root) {
+                        int min_max_cost = INT_MAX;
+                        int min_cost_sum = INT_MAX;
+                        int max_cost = -1;
+                        int cost_sum = -1;
+                        int best_r = -1;
+                        int best_c = -1;
 
-                double waitStart = MPI_Wtime();
-                MPI_Gather(sent, 4, MPI_INT, received, 4, MPI_INT, root, MPI_COMM_WORLD);
-                double waitEnd = MPI_Wtime();
-                waitTIme += waitEnd - waitStart;
-
-                if (procID == root) {
-                    for (int j = 0; j < nproc; j++) {
-                        max_cost = received[4 * j];
-                        cost_sum = received[4 * j + 1];
+                        for (int route = 0; route < numRoutes; route++) {
+                            int r;
+                            int c;
+                            if (route < high_hor - low_hor) {
+                                c = route + low_hor;
+                                r = y1;
+                                if (c == x1) {
+                                    continue;
+                                }
+                                calculate_cost(x1, x2, y1, y2, c, y1,
+                                               &max_cost, &cost_sum);
+                            } 
+                            else {
+                                r = route - (high_hor - low_hor) + low_ver;
+                                c = x1;
+                                if (r == y1) {
+                                    continue;
+                                }
+                                calculate_cost(x1, x2, y1, y2, x1, r,
+                                               &max_cost, &cost_sum);
+                            }
+                            //printf("r:%d c:%d max_cost: %d cost_sum: %d\n", r, c, max_cost, cost_sum );
+                            if (max_cost < min_max_cost || (max_cost == min_max_cost && cost_sum < min_cost_sum)) {
+                                min_max_cost = max_cost;
+                                min_cost_sum = cost_sum;
+                                best_r = r;
+                                best_c = c;
+                            }
+                        }
+                        bends[i].x = best_c;
+                        bends[i].y = best_r;    
+                    }
+                } 
+                else {
+                    int startIndex = procID;
+        
+                    int min_max_cost = INT_MAX;
+                    int min_cost_sum = INT_MAX;
+                    int max_cost = -1;
+                    int cost_sum = -1;
+                    int best_r = -1;
+                    int best_c = -1;
+                    double parallelStart = MPI_Wtime();
+                    for (int route = startIndex; route < numRoutes; route += nproc) {
+                        int r;
+                        int c;
+                        if (route < high_hor - low_hor) {
+                            c = route + low_hor;
+                            r = y1;
+                            if (c == x1) {
+                                continue;
+                            }
+                            calculate_cost(x1, x2, y1, y2, c, y1,
+                                           &max_cost, &cost_sum);
+                        } 
+                        else {
+                            r = route - (high_hor - low_hor) + low_ver;
+                            c = x1;
+                            if (r == y1) {
+                                continue;
+                            }
+                            calculate_cost(x1, x2, y1, y2, x1, r,
+                                           &max_cost, &cost_sum);
+                        }
+                        //printf("r:%d c:%d max_cost: %d cost_sum: %d\n", r, c, max_cost, cost_sum );
                         if (max_cost < min_max_cost || (max_cost == min_max_cost && cost_sum < min_cost_sum)) {
                             min_max_cost = max_cost;
                             min_cost_sum = cost_sum;
-                            best_r = received[4 * j + 2];
-                            best_c = received[4 * j + 3];
+                            best_r = r;
+                            best_c = c;
                         }
                     }
-                    bends[i].x = best_c;
-                    bends[i].y = best_r;
+                    double parallelEnd = MPI_Wtime();
+                    parallelTime += parallelEnd - parallelStart;
+                    // root combining results
+                    int sent[4];
+                    sent[0] = min_max_cost;
+                    sent[1] = min_cost_sum;
+                    sent[2] = best_r;
+                    sent[3] = best_c;
 
+                    double waitStart = MPI_Wtime();
+                    MPI_Gather(sent, 4, MPI_INT, received, 4, MPI_INT, root, MPI_COMM_WORLD);
+                    double waitEnd = MPI_Wtime();
+                    waitTIme += waitEnd - waitStart;
+
+                    if (procID == root) {
+                        for (int j = 0; j < nproc; j++) {
+                            max_cost = received[4 * j];
+                            cost_sum = received[4 * j + 1];
+                            if (max_cost < min_max_cost || (max_cost == min_max_cost && cost_sum < min_cost_sum)) {
+                                min_max_cost = max_cost;
+                                min_cost_sum = cost_sum;
+                                best_r = received[4 * j + 2];
+                                best_c = received[4 * j + 3];
+                            }
+                        }
+                        bends[i].x = best_c;
+                        bends[i].y = best_r;
+                    }
                 }
             } else {
                 if (procID == root) {
